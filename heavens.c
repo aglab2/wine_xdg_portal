@@ -1,0 +1,409 @@
+#include "heavens.h"
+
+#include "log.h"
+
+#include <stdbool.h>
+#include <windows.h>
+
+/*
+                     syscall:
+000000000011af80         endbr64                                                ; Begin of unwind block (FDE at 0x1deb68)
+000000000011af84         mov        rax, rdi
+000000000011af87         mov        rdi, rsi
+000000000011af8a         mov        rsi, rdx
+000000000011af8d         mov        rdx, rcx
+000000000011af90         mov        r10, r8
+000000000011af93         mov        r8, r9
+000000000011af96         mov        r9, qword [rsp+8]
+000000000011af9b         syscall
+000000000011af9d         cmp        rax, 0xfffffffffffff001
+000000000011afa3         jae        loc_11afa6
+
+000000000011afa5         ret
+                        ; endp
+
+                     loc_11afa6:
+000000000011afa6         mov        rcx, qword [qword_212cf0]                   ; qword_212cf0, CODE XREF=syscall+35
+000000000011afad         neg        eax
+000000000011afaf         mov        dword [fs:rcx], eax
+000000000011afb2         or         rax, 0xffffffffffffffff
+000000000011afb6         ret
+                        ; endp
+*/
+
+/* Wine heaven's gate caller part - we want to remove it
+4a: 48 89 c1                mov    rcx,rax
+4d: 49 8d 56 08             lea    rdx,[r14+0x8]
+51: e8 7a 01 00 00          call   0x1d0
+ */
+
+// x64: rax | rdi   rsi   rdx   r10   r8   x r9
+// x86: eax | ebx   ecx   edx   esi   edi  x ebp
+// C  : rdi | rsi   rdx   rcx   r8    r9   x [rsp+8]
+
+/*
+intro:
+ push rbp
+ mov rbp, rsp
+ xchg rcx, rdx
+ mov r8, rsi
+ mov r9, rdi
+ mov rdi, rax
+ mov rsi, rbx
+ call QWORD PTR [rip-0x13-0x8-0x6]
+
+ cmp rax, -1
+ jne done
+
+ call QWORD PTR [rip-0x1f-0x10-0x6]
+ mov eax, [rax]
+
+done:
+ mov rsp, rbp
+ pop rbp
+ ret
+ */
+
+static const BYTE syscall_tmpl[] = {
+    0x55,                               // push   rbp
+    0x48, 0x89, 0xe5,                   // mov    rbp,rsp
+    0x48, 0x87, 0xd1,                   // xchg   rcx,rdx
+    0x49, 0x89, 0xf0,                   // mov    r8,rsi
+    0x49, 0x89, 0xf9,                   // mov    r9,rdi
+    0x48, 0x89, 0xc7,                   // mov    rdi,rax
+    0x48, 0x89, 0xde,                   // mov    rsi,rbx
+    0xff, 0x15, 0xdf, 0xff, 0xff, 0xff, // call   __syscall
+    0x48, 0x83, 0xf8, 0xff,             // cmp    rax,0xffffffffffffffff
+    0x75, 0x08,                         // jne    25 <done>
+    0xff, 0x15, 0xcb, 0xff, 0xff, 0xff, // call   __errno
+    0x8b, 0x00,                         // mov    eax,DWORD PTR [rax]
+    0x48, 0x89, 0xec,                   // mov    rsp,rbp
+    0x5d,                               // pop    rbp
+    0xc3,                               // ret
+};
+
+#pragma pack(push,1)
+struct thunk_32to64
+{
+    BYTE  ljmp;   /* jump far, absolute indirect */
+    BYTE  modrm;  /* address=disp32, opcode=5 */
+    DWORD op;
+    DWORD addr;
+    WORD  cs;
+};
+#pragma pack(pop)
+
+#define OFFSET_LJMP 0
+#define OFFSET_TRAMPOLINE 0x200
+#define OFFSET_SYSCALL_PTRS 0x400
+#define OFFSET_SYSCALL (OFFSET_SYSCALL_PTRS + 0x10)
+
+static BYTE DECLSPEC_ALIGN(4096) code_buffer[0x1000];
+
+enum Instruction
+{
+    I_UNKNOWN,
+    I_MOV,
+    I_CALL,
+    I_LEA,
+};
+
+struct CallPatcherContext
+{
+    void* callStart;
+    void* callEnd;
+};
+
+static void call_patcher_context_init(struct CallPatcherContext* ctx)
+{
+    ctx->callStart = NULL;
+    ctx->callEnd   = NULL;
+}
+
+static bool call_patcher_on_instruction(struct CallPatcherContext* ctx, bool setup, bool call, void* start, void* end)
+{
+    if (call)
+    {
+        log("%p %p\n", ctx->callStart, ctx->callEnd);
+        if (ctx->callStart && ctx->callEnd)
+        {
+            log("Patching prepare at %p to %p\n", ctx->callStart, ctx->callEnd);
+
+            for (BYTE* p = (BYTE*) ctx->callStart; p < (BYTE*) ctx->callEnd; ++p)
+            {
+                *p = 0x90;
+            }
+
+            return true;
+        }
+    }
+
+    if (setup)
+    {
+        if (!ctx->callStart)
+        {
+            log("Setting up call start at %p\n", start);
+            ctx->callStart = start;
+        }
+        ctx->callEnd = end;
+        log("Setting up call end at %p\n", end);
+    }
+    else
+    {
+        ctx->callStart = NULL;
+        ctx->callEnd   = NULL;
+    }
+
+    return false;
+}
+
+// Takes the trampoline routine and decompiles it, copying it to the output buffer, and patching call to the alt_callback function.
+static int decompile_copy(const void* in, size_t limit, void* out, const void* alt_callback)
+{
+    const BYTE* p = (const BYTE*) in;
+    const BYTE* end = p + limit;
+
+    BYTE* out_p = (BYTE*) out;
+
+    unsigned distance = p - out_p;
+    log("decompile_copy: %p -> %p, distance: %x\n", p, out_p, distance);
+
+#define consume(n) do { memcpy(out_p, p, n); out_p += n; p += n; } while(0)
+
+    struct CallPatcherContext ctx;
+    call_patcher_context_init(&ctx);
+
+    bool success = false;
+
+    while (p < end)
+    {
+        void* start = (void*) out_p;
+        BYTE maybeRex = *p;
+        if (maybeRex >= 0x40 && maybeRex <= 0x4F)
+        {
+            log("Rex: %02x\n", maybeRex);
+            consume(1);
+        }
+
+        bool want_modrm = false;
+        bool want_imm8 = false;
+        bool is_setup = false;
+
+        enum Instruction instruction = I_UNKNOWN;
+
+        BYTE opcode = *p;
+        consume(1);
+        if (0x0f == opcode)
+        {
+            log("0f\n");
+            opcode = *p;
+            consume(1);
+            if (0xba == opcode)
+            {
+                log("btr\n");
+                want_modrm = true;
+                want_imm8 = true;
+            }
+            else
+            {
+                log("unknown opcode: 0f %02x???\n", opcode);
+                return -1;
+            }
+        }
+        else if (0x50 <= opcode && opcode <= 0x57)
+        {
+            log("push r%d\n", opcode - 0x50);
+        }
+        else if (0x58 <= opcode && opcode <= 0x5F)
+        {
+            log("pop r%d\n", opcode - 0x58);
+        }
+        else if (0x72 == opcode)
+        {
+            log("jb\n");
+            want_imm8 = true;
+        }
+        else if (0x87 == opcode)
+        {
+            log("xchg\n");
+            want_modrm = true;
+        }
+        else if (0x89 == opcode)
+        {
+            log("mov\n");
+            instruction = I_MOV;
+            want_modrm = true;
+        }
+        else if (0x8b == opcode)
+        {
+            log("mov\n");
+            instruction = I_MOV;
+            want_modrm = true;
+        }
+        else if (0x8D == opcode)
+        {
+            log("lea\n");
+            instruction = I_LEA;
+            want_modrm = true;
+        }
+        else if (0x8e == opcode)
+        {
+            log("movseg\n");
+            want_modrm = true;
+        }
+        else if (0x9C == opcode)
+        {
+            log("pushf\n");
+        }
+        else if (0xcf == opcode)
+        {
+            log("iret\n");
+            break;
+        }
+        else if (0xe8 == opcode)
+        {
+            log("call\n");
+            instruction = I_CALL;
+        }
+        else if (0xff == opcode)
+        {
+            log("group\n");
+            want_modrm = true;
+        }
+        else
+        {
+            log("unknown opcode: %02x???\n", opcode);
+            return -1;
+        }
+
+        if (want_modrm)
+        {
+            BYTE modrm = *p;
+            log("\tmodrm: %02x\n", modrm);
+            consume(1);
+
+            BYTE mod = (modrm & 0xC0) >> 6;
+            BYTE reg = (modrm & 0x38) >> 3;
+            BYTE rm  = (modrm & 0x07);
+
+            log("\tmod: %02x, reg: %02x, rm: %02x\n", mod, reg, rm);
+
+            if (mod != 3 && rm == 4)
+            {
+                log("\tsib: %02x\n", *p);
+                consume(1);
+            }
+
+            switch (mod)
+            {
+                case 0:
+                    if (rm == 5)
+                    {
+                        log("\trip rel: %08x\n", *(unsigned*)p);
+                        consume(4);
+                        *(unsigned*)(out_p - 4) += distance;
+                    }
+
+                    break;
+                case 1:
+                    log("\tdisp8: %02x\n", *p);
+                    consume(1);
+                    break;
+                case 2:
+                    log("\tdisp32: %08x\n", *(unsigned*)p);
+                    consume(4);
+                    break;
+                case 3:
+                    log("\treg: %02x\n", rm);
+
+                    if (instruction == I_MOV && reg == 0)
+                    {
+                        log("+++setup for RAX+++\n");
+                        is_setup = true;
+                    }
+
+                    break;
+            }
+
+            if (instruction == I_LEA && reg == 2 && rm == 6)
+            {
+                log("+++setup for RDX+++\n");
+                is_setup = true;
+            }
+        }
+
+        if (I_CALL == instruction)
+        {
+            log("\t%08x\n", *(unsigned*)p);
+            p += 4;
+            *(unsigned*)(out_p) = (const BYTE*) alt_callback - (const BYTE*) out_p - 4;
+            log("\tpatched call to %p, offset: %08x\n", alt_callback, *(unsigned*)(out_p));
+            out_p += 4;
+        }
+
+        if (want_imm8)
+        {
+            log("\timm8: %02x\n", *p);
+            consume(1);
+        }
+
+        success |= call_patcher_on_instruction(&ctx, is_setup, instruction == I_CALL, start, (void*) out_p);
+    }
+
+    return success ? 0 : -1;
+}
+
+void* hg_setup(struct LibcFunctions libc)
+{
+    memset(code_buffer, 0x90, sizeof(code_buffer));
+
+    struct thunk_32to64 *linsys = (struct thunk_32to64 *) (code_buffer + OFFSET_LJMP);
+
+    void* teb = NtCurrentTeb();
+    if (!teb)
+    {
+        log("Failed to get TEB\n");
+        return NULL;
+    }
+
+    struct thunk_32to64* winsys = *(void**)((BYTE*)teb + 0xC0); // TEB->WOW32Reserved
+
+    // TODO: make sure that winsys matches the expected layout
+
+    log("WOW32Reserved: %p\n", winsys);
+
+    log("winsys: %p\n", winsys);
+    log("winsys.op: %x\n", winsys->op);
+    log("winsys.addr: %x\n", winsys->addr);
+
+    void* ori_trampoline = (void*) winsys->addr;
+    void* new_trampoline = (void*) (code_buffer + OFFSET_TRAMPOLINE);
+    void* new_syscall_core = (void*) (code_buffer + OFFSET_SYSCALL);
+
+    *(uint64_t*) (code_buffer + OFFSET_SYSCALL - 0x8 ) = (uint64_t) libc.syscall;
+    *(uint64_t*) (code_buffer + OFFSET_SYSCALL - 0x10) = (uint64_t) libc.errno_location;
+    memcpy(new_syscall_core, syscall_tmpl, sizeof(syscall_tmpl));
+
+    // Decompile the original trampoline and copy it to the new trampoline, patching calls to the syscall core.
+    int res = decompile_copy(ori_trampoline, 0x400, new_trampoline, new_syscall_core);
+
+    if (res)
+    {
+        log("Failed to decompile trampoline\n");
+        return NULL;
+    }
+
+    log("trampoline: %p\n", new_trampoline);
+    log("syscall core: %p\n", new_syscall_core);
+    log("linsys: %p\n", linsys);
+
+    *linsys = *winsys;
+    linsys->op = (DWORD) &linsys->addr;
+    linsys->addr = (DWORD) new_trampoline;
+
+    SIZE_T size;
+    ULONG old_prot;
+
+    VirtualProtect(code_buffer, sizeof(code_buffer), PAGE_EXECUTE_READ, &old_prot);
+    return linsys;
+}
