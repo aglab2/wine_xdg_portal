@@ -49,6 +49,67 @@ wchar_t* str_Unix_to_WinW(const char* path)
     return wine_get_dos_file_name_ptr(path);
 }
 
+char* str_WinW_to_WinA(const wchar_t* path)
+{
+    int len = WideCharToMultiByte(CP_UTF8, 0, path, -1, NULL, 0, NULL, NULL);
+    if (len == 0)
+    {
+        return NULL;
+    }
+
+    char* result = (char*)HeapAlloc(GetProcessHeap(), 0, len * sizeof(char));
+    if (!result)
+    {
+        return NULL;
+    }
+
+    WideCharToMultiByte(CP_UTF8, 0, path, -1, result, len, NULL, NULL);
+    return result;
+}
+
+char* str_URI_to_Unix(const char* uri)
+{
+    if (strncmp(uri, "file://", 7) != 0)
+    {
+        return NULL;
+    }
+
+    size_t len = strlen(uri);
+    char* path = (char*)HeapAlloc(GetProcessHeap(), 0, len * sizeof(char));
+    if (!path)
+    {
+        return NULL;
+    }
+
+    size_t needed = 0;
+    char* dst = path;
+    for (const char* src = uri + 7; *src; src++)
+    {
+        char next;
+        if (*src == '%' && isxdigit(*(src + 1)) && isxdigit(*(src + 2)))
+        {
+            char buf[3];
+            memcpy(buf, src + 1, 2 * sizeof(char));
+            buf[2] = 0;
+
+            int ih = strtol(buf, NULL, 16);
+
+            src += 2; /* Advance to end of escape */
+            next = (char) ih;
+        }
+        else
+        {
+            next = *src;
+        }
+
+        *dst++ = next;
+    }
+
+    *dst = '\0';
+
+    return path;
+}
+
 void str_free(void* path)
 {
     if (!path)
