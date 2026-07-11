@@ -38,7 +38,7 @@
  */
 
  // as compiled from syscall.S
-static const BYTE syscall_tmpl[] = { 0x55, 0x48, 0x89, 0xE5, 0x48, 0x81, 0xEC, 0x20, 0x03, 0x00, 0x00, 0x48, 0x87, 0xD1, 0x49, 0x89, 0xF0, 0x49, 0x89, 0xF9, 0x48, 0x89, 0xC7, 0x48, 0x89, 0xDE, 0xF3, 0x48, 0x0F, 0xAE, 0xC0, 0x48, 0x89, 0x44, 0x24, 0x08, 0x48, 0x8D, 0x84, 0x24, 0x18, 0x02, 0x00, 0x00, 0x48, 0x89, 0x00, 0xF3, 0x48, 0x0F, 0xAE, 0xD0, 0xFF, 0x15, 0xB6, 0xFF, 0xFF, 0xFF, 0x48, 0x83, 0xF8, 0xFF, 0x75, 0x15, 0x48, 0x8D, 0x84, 0x24, 0x18, 0x02, 0x00, 0x00, 0x48, 0x03, 0x05, 0xA9, 0xFF, 0xFF, 0xFF, 0x0F, 0xB6, 0x00, 0x48, 0xF7, 0xD8, 0x48, 0x8B, 0x5C, 0x24, 0x08, 0xF3, 0x48, 0x0F, 0xAE, 0xD3, 0x48, 0x81, 0xC4, 0x20, 0x03, 0x00, 0x00, 0x48, 0x89, 0xEC, 0x5D, 0xC3 };
+static const BYTE syscall_tmpl[] = { 0x55, 0x48, 0x89, 0xE5, 0x48, 0x81, 0xEC, 0x20, 0x03, 0x00, 0x00, 0x48, 0x89, 0xCF, 0x48, 0x89, 0xD3, 0x8B, 0x33, 0x8B, 0x53, 0x04, 0x8B, 0x4B, 0x08, 0x44, 0x8B, 0x43, 0x0C, 0x44, 0x8B, 0x4B, 0x10, 0xF3, 0x48, 0x0F, 0xAE, 0xC0, 0x48, 0x89, 0x44, 0x24, 0x08, 0x48, 0x8D, 0x84, 0x24, 0x18, 0x02, 0x00, 0x00, 0x48, 0x89, 0x00, 0xF3, 0x48, 0x0F, 0xAE, 0xD0, 0xFF, 0x15, 0xAF, 0xFF, 0xFF, 0xFF, 0x48, 0x83, 0xF8, 0xFF, 0x75, 0x14, 0x48, 0x8D, 0x84, 0x24, 0x18, 0x02, 0x00, 0x00, 0x48, 0x03, 0x05, 0xA2, 0xFF, 0xFF, 0xFF, 0x8B, 0x00, 0x48, 0xF7, 0xD8, 0x48, 0x8B, 0x5C, 0x24, 0x08, 0xF3, 0x48, 0x0F, 0xAE, 0xD3, 0x48, 0x81, 0xC4, 0x20, 0x03, 0x00, 0x00, 0x48, 0x89, 0xEC, 0x5D, 0xC3 };
 
 #pragma pack(push,1)
 struct thunk_32to64
@@ -66,55 +66,6 @@ enum Instruction
     I_LEA,
 };
 
-struct CallPatcherContext
-{
-    void* callStart;
-    void* callEnd;
-};
-
-static void call_patcher_context_init(struct CallPatcherContext* ctx)
-{
-    ctx->callStart = NULL;
-    ctx->callEnd   = NULL;
-}
-
-static bool call_patcher_on_instruction(struct CallPatcherContext* ctx, bool setup, bool call, void* start, void* end)
-{
-    if (call)
-    {
-        log("%p %p\n", ctx->callStart, ctx->callEnd);
-        if (ctx->callStart && ctx->callEnd)
-        {
-            log("Patching prepare at %p to %p\n", ctx->callStart, ctx->callEnd);
-
-            for (BYTE* p = (BYTE*) ctx->callStart; p < (BYTE*) ctx->callEnd; ++p)
-            {
-                *p = 0x90;
-            }
-
-            return true;
-        }
-    }
-
-    if (setup)
-    {
-        if (!ctx->callStart)
-        {
-            log("Setting up call start at %p\n", start);
-            ctx->callStart = start;
-        }
-        ctx->callEnd = end;
-        log("Setting up call end at %p\n", end);
-    }
-    else
-    {
-        ctx->callStart = NULL;
-        ctx->callEnd   = NULL;
-    }
-
-    return false;
-}
-
 // Takes the trampoline routine and decompiles it, copying it to the output buffer, and patching call to the alt_callback function.
 static int decompile_copy(const void* in, size_t limit, void* out, const void* alt_callback)
 {
@@ -128,11 +79,6 @@ static int decompile_copy(const void* in, size_t limit, void* out, const void* a
 
 #define consume(n) do { memcpy(out_p, p, n); out_p += n; p += n; } while(0)
 
-    struct CallPatcherContext ctx;
-    call_patcher_context_init(&ctx);
-
-    bool success = false;
-
     while (p < end)
     {
         void* start = (void*) out_p;
@@ -145,7 +91,6 @@ static int decompile_copy(const void* in, size_t limit, void* out, const void* a
 
         bool want_modrm = false;
         bool want_imm8 = false;
-        bool is_setup = false;
 
         enum Instruction instruction = I_UNKNOWN;
 
@@ -273,20 +218,7 @@ static int decompile_copy(const void* in, size_t limit, void* out, const void* a
                     break;
                 case 3:
                     log("\treg: %02x\n", rm);
-
-                    if (instruction == I_MOV && reg == 0)
-                    {
-                        log("+++setup for RAX+++\n");
-                        is_setup = true;
-                    }
-
                     break;
-            }
-
-            if (instruction == I_LEA && reg == 2 && rm == 6)
-            {
-                log("+++setup for RDX+++\n");
-                is_setup = true;
             }
         }
 
@@ -304,11 +236,9 @@ static int decompile_copy(const void* in, size_t limit, void* out, const void* a
             log("\timm8: %02x\n", *p);
             consume(1);
         }
-
-        success |= call_patcher_on_instruction(&ctx, is_setup, instruction == I_CALL, start, (void*) out_p);
     }
 
-    return success ? 0 : -1;
+    return 0;
 }
 
 void* hg_setup(struct LibcFunctions libc)

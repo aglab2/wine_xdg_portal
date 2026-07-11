@@ -1,3 +1,5 @@
+#include "wine_xdg_portal.h"
+
 #include <intrin.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -7,68 +9,98 @@
 #include "errno_conv.h"
 #include "heavens.h"
 #include "log.h"
+#include "string_conv.h"
 #include "recon.h"
 
 #include <dbus/dbus.h>
 
-#include <windows.h>
-
-LPSTR (*CDECL wine_get_unix_file_name_ptr)(LPCWSTR) = NULL;
-LPWSTR (*CDECL wine_get_dos_file_name_ptr)(LPCSTR) = NULL;
-
 static FILE* unixOpen(const char* _path, const wchar_t* flags)
 {
-    wchar_t* path = wine_get_dos_file_name_ptr(_path);
+    wchar_t* path = str_Unix_to_WinW(_path);
     if (!path)
     {
         return NULL;
     }
 
     FILE* f = _wfopen(path, flags);
-    HeapFree( GetProcessHeap(), 0, path );
+    str_free(path);
 
     return f;
 }
 
 void* heavensGate = NULL;
 
+static int syscall(int n, int a0, int a1, int a2, int a3, int a4)
+{
+    int ret;
+
+    __asm__ volatile(
+        "pushl %[a4]\n\t"
+        "pushl %[a3]\n\t"
+        "pushl %[a2]\n\t"
+        "pushl %[a1]\n\t"
+        "pushl %[a0]\n\t"
+        "pushl %[n]\n\t"
+        "call *_heavensGate\n\t"
+        "addl $24, %%esp\n\t"
+        : "=a"(ret)
+        : [n]  "a" (n),
+          [a0] "r"(a0),
+          [a1] "r"(a1),
+          [a2] "r"(a2),
+          [a3] "r"(a3),
+          [a4] "r"(a4)
+        : "memory");
+
+    return errnoConv(ret);
+}
+
+int syscall0(int n)
+{
+    return syscall(n, 0, 0, 0, 0, 0);
+}
+
+int syscall1(int n, int a0)
+{
+    return syscall(n, a0, 0, 0, 0, 0);
+}
+
+int syscall2(int n, int a0, int a1)
+{
+    return syscall(n, a0, a1, 0, 0, 0);
+}
+
+int syscall3(int n, int a0, int a1, int a2)
+{
+    return syscall(n, a0, a1, a2, 0, 0);
+}
+
+int syscall4(int n, int a0, int a1, int a2, int a3)
+{
+    return syscall(n, a0, a1, a2, a3, 0);
+}
+
+int syscall5(int n, int a0, int a1, int a2, int a3, int a4)
+{
+    return syscall(n, a0, a1, a2, a3, a4);
+}
+
 int getpidx (void)
 {
-  int pid;
-
-  __asm__ volatile (
-      "call *_heavensGate"
-      : "=a" (pid)
-      : "0" (39 /* __NR_getpid */)
-      : "memory");
-
-  return errnoConv(pid);
+    return syscall0(39);
 }
 
 int enosys(void)
 {
-  int err;
-
-  __asm__ volatile (
-      "call *_heavensGate"
-      : "=a" (err)
-      : "0" (9999)
-      : "memory");
-
-  return errnoConv(err);
+    return syscall0(9999);
 }
 
-int __cdecl wine_portal_init()
+int WP_DECL wine_portal_init()
 {
     // Are we even running under Wine?
+    if (str_conv_init() != 0)
     {
-        wine_get_unix_file_name_ptr = (void*) GetProcAddress(GetModuleHandleA("KERNEL32"), "wine_get_unix_file_name");
-        wine_get_dos_file_name_ptr  = (void*) GetProcAddress(GetModuleHandleA("KERNEL32"), "wine_get_dos_file_name");
-
-        if (!wine_get_unix_file_name_ptr || !wine_get_dos_file_name_ptr)
-        {
-            return -1;
-        }
+        return -1;
     }
 
     // Prepare logging + test we can use /tmp + unix convs
@@ -148,74 +180,59 @@ int __cdecl wine_portal_init()
 
 // MARK: Implementation
 
-typedef struct WideFilter
+void WP_DECL wine_portal_wide_open_native_for(const wchar_t* _)
 {
-    const wchar_t* name;
-    const wchar_t* pattern;
-} WideFilter;
-
-struct Files
-{
-    wchar_t** paths;
-    int count;
-};
-
-typedef struct Utf8Filter
-{
-    const char* name;
-    const char* pattern;
-} Utf8Filter;
-
-struct Utf8Files
-{
-    char** paths;
-    int count;
-};
-
-
-void __cdecl wine_portal_wide_open_native_for(const wchar_t* path)
-{
-    log("wine_portal_wide_open_native_for: %ls\n", path);
-
-    char* unix_name = wine_get_unix_file_name_ptr(path);
-    if (!unix_name)
-    {
-        return;
-    }
-
-    if (unix_name)
-    {
-        HeapFree( GetProcessHeap(), 0, unix_name );
-    }
-
-    return;
+    // not implemented currently
 }
 
-void __cdecl wine_portal_free(void* ptr)
+void WP_DECL wine_portal_free(void* ptr)
 {
     log("wine_portal_free: %p\n", ptr);
     free(ptr);
 }
 
-void __cdecl wine_portal_wide_open_files_dialog(void* hwndOwner, WideFilter* filters, int filtersCount, const wchar_t* initialDir, struct Files* outFiles)
+void WP_DECL wine_portal_wide_open_files_dialog(void* hwndOwner, WideFilter* filters, int filtersCount, const wchar_t* initialDir, struct Files* outFiles)
 {
     log("wine_portal_wide_open_files_dialog: %p, %p, %d, %ls, %p\n", hwndOwner, filters, filtersCount, initialDir, outFiles);
 }
 
-wchar_t* __cdecl wine_portal_wide_save_file_dialog(void* hwndOwner, WideFilter* filters, int filtersCount, const wchar_t* defaultName, const wchar_t* initialDir)
+wchar_t* WP_DECL wine_portal_wide_save_file_dialog(void* hwndOwner, WideFilter* filters, int filtersCount, const wchar_t* defaultName, const wchar_t* initialDir)
 {
     log("wine_portal_wide_save_file_dialog: %p, %p, %d, %ls, %ls\n", hwndOwner, filters, filtersCount, defaultName, initialDir);
     return NULL;
 }
 
-wchar_t* __cdecl wine_portal_wide_choose_directory(void* hwndOwner, const wchar_t* title, const wchar_t* initialDir)
+wchar_t* WP_DECL wine_portal_wide_choose_directory(void* hwndOwner, const wchar_t* title, const wchar_t* initialDir)
 {
     log("wine_portal_wide_choose_directory: %p, %ls, %ls\n", hwndOwner, title, initialDir);
     return NULL;
 }
 
-void __cdecl wine_portal_utf8_open_native_for(const char* path)
+void WP_DECL wine_portal_utf8_open_native_for(const char* _smth)
 {
+    bool uri = false;
+    const char* smth;
+    char* path_to_free = NULL;
+
+    if (0 == strncmp(_smth, "http", 4))
+    {
+        smth = _smth;
+        uri = true;
+    }
+    else
+    {
+        path_to_free = str_WinA_to_Unix(_smth);
+        if (!path_to_free)
+        {
+            log("Failed to convert path to unix\n");
+            return;
+        }
+
+        smth = path_to_free;
+        log("Converted path to unix: %s\n", smth);
+        uri = false;
+    }
+
     DBusError err;
     dbus_error_init(&err);
 
@@ -223,24 +240,86 @@ void __cdecl wine_portal_utf8_open_native_for(const char* path)
     if (!conn)
     {
         log("Failed: %s\n", err.message);
+        str_free(path_to_free);
+        return;
     }
+
+    DBusMessage *msg = dbus_message_new_method_call(
+        "org.freedesktop.portal.Desktop",
+        "/org/freedesktop/portal/desktop",
+        "org.freedesktop.portal.OpenURI",
+        uri ? "OpenURI" : "OpenFile");
+
+    const char *parent = "";
+
+    DBusMessageIter iter, dict;
+
+    dbus_message_iter_init_append(msg, &iter);
+
+    dbus_message_iter_append_basic(
+        &iter,
+        DBUS_TYPE_STRING,
+        &parent);
+
+    dbus_message_iter_append_basic(
+        &iter,
+        DBUS_TYPE_STRING,
+        &smth);
+
+    dbus_message_iter_open_container(
+        &iter,
+        DBUS_TYPE_ARRAY,
+        "{sv}",
+        &dict);
+
+    dbus_message_iter_close_container(
+        &iter,
+        &dict);
+
+    DBusMessage *reply =
+        dbus_connection_send_with_reply_and_block(
+            conn,
+            msg,
+            -1,
+            &err);
+
+    str_free(path_to_free);
+
+    if (!reply) {
+        fprintf(gLog, "%s\n", err.message);
+        return;
+    }
+
+    DBusMessageIter riter;
+    dbus_message_iter_init(reply, &riter);
+
+    if (dbus_message_iter_get_arg_type(&riter) == DBUS_TYPE_OBJECT_PATH) {
+        const char *handle;
+        dbus_message_iter_get_basic(&riter, &handle);
+        printf("Request handle: %s\n", handle);
+    }
+
+    dbus_message_unref(reply);
+    dbus_message_unref(msg);
+
+    dbus_connection_unref(conn);
 }
 
-char* __cdecl wine_portal_utf8_open_file_dialog(void* hwndOwner, bool fileMustExist, Utf8Filter* filters, int filtersCount, const char* initialDir)
+char* WP_DECL wine_portal_utf8_open_file_dialog(void* hwndOwner, bool fileMustExist, Utf8Filter* filters, int filtersCount, const char* initialDir)
 {
     return NULL;
 }
 
-void __cdecl wine_portal_utf8_open_files_dialog(void* hwndOwner, Utf8Filter* filters, int filtersCount, const char* initialDir, struct Utf8Files* outFiles)
+void WP_DECL wine_portal_utf8_open_files_dialog(void* hwndOwner, Utf8Filter* filters, int filtersCount, const char* initialDir, struct Utf8Files* outFiles)
 {
 }
 
-char* __cdecl wine_portal_utf8_save_file_dialog(void* hwndOwner, Utf8Filter* filters, int filtersCount, const char* defaultName, const char* initialDir)
+char* WP_DECL wine_portal_utf8_save_file_dialog(void* hwndOwner, Utf8Filter* filters, int filtersCount, const char* defaultName, const char* initialDir)
 {
     return NULL;
 }
 
-char* __cdecl wine_portal_utf8_choose_directory(void* hwndOwner, const wchar_t* title, const char* initialDir)
+char* WP_DECL wine_portal_utf8_choose_directory(void* hwndOwner, const wchar_t* title, const char* initialDir)
 {
     return NULL;
 }

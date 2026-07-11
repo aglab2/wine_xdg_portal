@@ -17,12 +17,14 @@ _syscall:
     mov %rsp, %rbp
     sub $(ERRNO_OFFSET_MAX - ERRNO_OFFSET_MIN + 32), %rsp
 
-# Prepare registers - shuffle around
-    xchg %rdx, %rcx
-    mov %rsi, %r8 
-    mov %rdi, %r9
-    mov %rax, %rdi
-    mov %rbx, %rsi
+# Prepare registers. rcx is syscall number, rdx is stack of arguments
+    mov %rcx, %rdi
+    mov %rdx, %rbx
+    movl 0(%rbx) , %esi
+    movl 4(%rbx) , %edx
+    movl 8(%rbx) , %ecx
+    movl 12(%rbx), %r8d
+    movl 16(%rbx), %r9d
 
 # Now rax and rbx are free temporaries we can clobber
 
@@ -44,7 +46,7 @@ _syscall:
 #...load back the errno from stack we prepared
     lea (24 - ERRNO_OFFSET_MIN)(%rsp), %rax
     add errno_offset(%rip), %rax
-    movzx 0(%rax), %eax
+    movl 0(%rax), %eax
     neg %rax
 
 done:
