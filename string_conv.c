@@ -20,6 +20,11 @@ int str_conv_init()
 
 char* str_WinA_to_Unix(const char* path)
 {
+    if (!path)
+    {
+        return NULL;
+    }
+
     // convert to wide string first
     int len = MultiByteToWideChar(CP_UTF8, 0, path, -1, NULL, 0);
     if (len == 0)
@@ -41,16 +46,63 @@ char* str_WinA_to_Unix(const char* path)
 
 char* str_WinW_to_Unix(const wchar_t* path)
 {
+    if (!path)
+    {
+        return NULL;
+    }
+
     return wine_get_unix_file_name_ptr(path);
 }
 
 wchar_t* str_Unix_to_WinW(const char* path)
 {
+    if (!path)
+    {
+        return NULL;
+    }
+
     return wine_get_dos_file_name_ptr(path);
+}
+
+char* str_Unix_to_WinA(const char* path)
+{
+    if (!path)
+    {
+        return NULL;
+    }
+
+    wchar_t* wpath = wine_get_dos_file_name_ptr(path);
+    if (!wpath)
+    {
+        return NULL;
+    }
+
+    int len = WideCharToMultiByte(CP_UTF8, 0, wpath, -1, NULL, 0, NULL, NULL);
+    if (len == 0)
+    {
+        HeapFree(GetProcessHeap(), 0, wpath);
+        return NULL;
+    }
+
+    char* result = (char*)HeapAlloc(GetProcessHeap(), 0, len * sizeof(char));
+    if (!result)
+    {
+        HeapFree(GetProcessHeap(), 0, wpath);
+        return NULL;
+    }
+
+    WideCharToMultiByte(CP_UTF8, 0, wpath, -1, result, len, NULL, NULL);
+    HeapFree(GetProcessHeap(), 0, wpath);
+    return result;
 }
 
 char* str_WinW_to_WinA(const wchar_t* path)
 {
+    if (!path)
+    {
+        return NULL;
+    }
+
     int len = WideCharToMultiByte(CP_UTF8, 0, path, -1, NULL, 0, NULL, NULL);
     if (len == 0)
     {

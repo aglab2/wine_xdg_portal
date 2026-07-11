@@ -1,5 +1,6 @@
 #include "heavens.h"
 
+#include "errno_conv.h"
 #include "log.h"
 
 #include <stdbool.h>
@@ -241,7 +242,9 @@ static int decompile_copy(const void* in, size_t limit, void* out, const void* a
     return 0;
 }
 
-void* hg_setup(struct LibcFunctions libc)
+void* heavensGate = NULL;
+
+int hg_setup(struct LibcFunctions libc)
 {
     memset(code_buffer, 0x90, sizeof(code_buffer));
 
@@ -251,7 +254,7 @@ void* hg_setup(struct LibcFunctions libc)
     if (!teb)
     {
         log("Failed to get TEB\n");
-        return NULL;
+        return -1;
     }
 
     struct thunk_32to64* winsys = *(void**)((BYTE*)teb + 0xC0); // TEB->WOW32Reserved
@@ -279,7 +282,7 @@ void* hg_setup(struct LibcFunctions libc)
     {
         log("Failed to decompile trampoline\n");
         log_buff("trampoline", ori_trampoline, 0x400);
-        return NULL;
+        return -1;
     }
 
     log("trampoline: %p\n", new_trampoline);
@@ -294,5 +297,62 @@ void* hg_setup(struct LibcFunctions libc)
     ULONG old_prot;
 
     VirtualProtect(code_buffer, sizeof(code_buffer), PAGE_EXECUTE_READ, &old_prot);
-    return linsys;
+    heavensGate = linsys;
+
+    return 0;
+}
+
+static int syscall(int n, int a0, int a1, int a2, int a3, int a4)
+{
+    int ret;
+
+    __asm__ volatile(
+        "pushl %[a4]\n\t"
+        "pushl %[a3]\n\t"
+        "pushl %[a2]\n\t"
+        "pushl %[a1]\n\t"
+        "pushl %[a0]\n\t"
+        "pushl %[n]\n\t"
+        "call *_heavensGate\n\t"
+        "addl $24, %%esp\n\t"
+        : "=a"(ret)
+        : [n]  "a" (n),
+          [a0] "r"(a0),
+          [a1] "r"(a1),
+          [a2] "r"(a2),
+          [a3] "r"(a3),
+          [a4] "r"(a4)
+        : "memory");
+
+    return errnoConv(ret);
+}
+
+int syscall0(int n)
+{
+    return syscall(n, 0, 0, 0, 0, 0);
+}
+
+int syscall1(int n, int a0)
+{
+    return syscall(n, a0, 0, 0, 0, 0);
+}
+
+int syscall2(int n, int a0, int a1)
+{
+    return syscall(n, a0, a1, 0, 0, 0);
+}
+
+int syscall3(int n, int a0, int a1, int a2)
+{
+    return syscall(n, a0, a1, a2, 0, 0);
+}
+
+int syscall4(int n, int a0, int a1, int a2, int a3)
+{
+    return syscall(n, a0, a1, a2, a3, 0);
+}
+
+int syscall5(int n, int a0, int a1, int a2, int a3, int a4)
+{
+    return syscall(n, a0, a1, a2, a3, a4);
 }
