@@ -13,6 +13,7 @@
 #include "recon.h"
 
 #include <dbus/dbus.h>
+#include </usr/include/asm/unistd_64.h>
 
 static FILE* unixOpen(const char* _path, const wchar_t* flags)
 {
@@ -85,15 +86,28 @@ int syscall5(int n, int a0, int a1, int a2, int a3, int a4)
     return syscall(n, a0, a1, a2, a3, a4);
 }
 
-int getpidx (void)
+// MARK: Syscalls
+
+static int getpidx (void)
 {
     return syscall0(39);
 }
 
-int enosys(void)
+static int enosys(void)
 {
     return syscall0(9999);
 }
+
+static int open(const char *pathname, int flags)
+{
+  return syscall3(__NR_open, (int)pathname, flags, 0);
+}
+
+static int close(int fd)
+{
+  return syscall1(__NR_close, fd);
+}
+
 
 int WP_DECL wine_portal_init()
 {
@@ -250,7 +264,7 @@ void WP_DECL wine_portal_utf8_open_native_for(const char* _smth)
         "org.freedesktop.portal.OpenURI",
         uri ? "OpenURI" : "OpenFile");
 
-    const char *parent = "";
+    const char parent[] = "";
 
     DBusMessageIter iter, dict;
 
@@ -261,10 +275,38 @@ void WP_DECL wine_portal_utf8_open_native_for(const char* _smth)
         DBUS_TYPE_STRING,
         &parent);
 
-    dbus_message_iter_append_basic(
-        &iter,
-        DBUS_TYPE_STRING,
-        &smth);
+    if (uri)
+    {
+        dbus_message_iter_append_basic(
+            &iter,
+            DBUS_TYPE_STRING,
+            &smth);
+    }
+    else
+    {
+        int fd = open(smth, 0200000);
+        bool is_dir = (fd >= 0);
+        if (fd < 0)
+        {
+            fd = open(smth, 0);
+        }
+
+        if (fd < 0)
+        {
+            log("Failed to open file: %s\n", smth);
+            str_free(path_to_free);
+            return;
+        }
+
+        dbus_bool_t ok = dbus_message_iter_append_basic(
+            &iter,
+            DBUS_TYPE_UNIX_FD,
+            &fd);
+
+        log("dbus_message_iter_append_basic: %d, ok=%d\n", fd, ok);
+
+        // close(fd);
+    }
 
     dbus_message_iter_open_container(
         &iter,
