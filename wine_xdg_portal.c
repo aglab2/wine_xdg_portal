@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#include "errno_conv.h"
 #include "heavens.h"
 #include "log.h"
 #include "recon.h"
@@ -41,7 +42,20 @@ int getpidx (void)
       : "0" (39 /* __NR_getpid */)
       : "memory");
 
-  return pid;
+  return errnoConv(pid);
+}
+
+int enosys(void)
+{
+  int err;
+
+  __asm__ volatile (
+      "call *_heavensGate"
+      : "=a" (err)
+      : "0" (9999)
+      : "memory");
+
+  return errnoConv(err);
 }
 
 int __cdecl wine_portal_init()
@@ -59,11 +73,19 @@ int __cdecl wine_portal_init()
 
     // Prepare logging + test we can use /tmp + unix convs
     {
-        gLog = unixOpen("/tmp/test.log", L"w+");
+        gLog = unixOpen("/tmp/wine_xdg_portal.log", L"w+");
         if (!gLog)
         {
             return -1;
         }
+    }
+
+    bool hasFsgsBase = *(bool*) 0x7ffe028a;
+    log("hasFsgsBase: %d\n", hasFsgsBase);
+    if (!hasFsgsBase)
+    {
+        log("CPU is too old, need fsgsbase support\n");
+        return -1;
     }
 
     // Make canary + find pid of our process
@@ -91,7 +113,7 @@ int __cdecl wine_portal_init()
     }
 
     struct LibcFunctions libc = find_libc(pid);
-    if (!libc.syscall || !libc.errno_location)
+    if (!libc.syscall || !libc.errno_location || !libc.errno_fs_offset)
     {
         log("Failed to find libc\n");
         return -1;
@@ -113,6 +135,14 @@ int __cdecl wine_portal_init()
         return -1;
     }
 
+    int errx = enosys();
+    if (errx != -1 && errno != ENOSYS)
+    {
+        log("enosys() = %d, error=%d, expected %d\n", errx, errno, ENOSYS);
+        return -1;
+    }
+
+    log("wine_portal_init() succeeded\n");
     return 0;
 }
 

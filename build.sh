@@ -1,2 +1,2 @@
-/opt/llvm-mingw/bin/i686-w64-mingw32-gcc -shared -o wine_xdg_portal.dll procfs.c wine_xdg_portal.c log.c recon.c heavens.c -mssse3 -g -gcodeview --for-linker --pdb=./wine_xdg_portal.pdb -Ldbus -ldbus-static -Idbus
+/opt/llvm-mingw/bin/i686-w64-mingw32-gcc -shared -o wine_xdg_portal.dll procfs.c wine_xdg_portal.c log.c recon.c heavens.c errno_conv.c -mssse3 -g -gcodeview --for-linker --pdb=./wine_xdg_portal.pdb -Ldbus -ldbus-static -Idbus
 cp ./wine_xdg_portal.dll ./wine_xdg_portal.pdb /run/media/admin/SSD/Project64Luna/

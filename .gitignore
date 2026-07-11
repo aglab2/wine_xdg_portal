@@ -1,2 +1,4 @@
 *.dll
 *.pdb
+*.o
+*.bin

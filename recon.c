@@ -7,6 +7,22 @@
 #include "elf.h"
 #include "log.h"
 #include "procfs.h"
+#include "errno-limits.h"
+
+static void* memmem(const void *haystack, size_t haystack_len, const void *needle, size_t needle_len)
+{
+  const char *begin;
+  const char *const last_possible = (const char *) haystack + haystack_len - needle_len;
+
+  for (begin = (const char *) haystack; begin <= last_possible; ++begin)
+    if (begin[0] == ((const char *) needle)[0] &&
+	!memcmp ((const void *) &begin[1],
+		 (const void *) ((const char *) needle + 1),
+		 needle_len - 1))
+      return (void *) begin;
+
+  return NULL;
+}
 
 int find_pid(const char* canary)
 {
@@ -310,6 +326,60 @@ struct LibcFunctions find_libc(int pid)
                 log("Found syscall outside of libc.so.6 mapping\n");
                 ret.syscall = 0;
             }
+        }
+    }
+
+    // verify that libc errno is actually usable. must be
+    /*
+    0:  f3 0f 1e fa                   <prolog stuff>
+    4:  48 8b 05 05 b2 1e 00          mov    rax,QWORD PTR [rip+OFFSET]
+    b:  64 48 03 04 25 00 00 00 00    add    rax,QWORD PTR fs:0x0
+    14: c3                            <epilog stuff>
+    */
+    {
+        uint8_t code[64];
+        fseeko64(ram, ret.errno_location, SEEK_SET);
+        if (1 != fread(code, sizeof(code), 1, ram))
+        {
+            log("Failed to read __errno_location code from process %d\n", pid);
+            goto fini;
+        }
+
+        static const uint8_t offLoad[] = { 0x48, 0x8b, 0x05 };
+        static const uint8_t fsLoad [] = { 0x64, 0x48, 0x03, 0x04, 0x25, 0x00, 0x00, 0x00, 0x00 };
+
+        uint8_t* offAt = memmem(code, sizeof(code), offLoad, sizeof(offLoad));
+        uint8_t* fsAt  = memmem(code, sizeof(code), fsLoad,  sizeof(fsLoad));
+        if (!offAt && !fsAt)
+        {
+            log("Failed to find __errno_location code pattern in process %d\n", pid);
+            log_buff("errno_location_code", code, sizeof(code));
+            goto fini;
+        }
+
+        uint64_t errno_loc = *(uint32_t*)(offAt + 3)
+                           + (offAt - code)
+                           + 7
+                           + ret.errno_location;
+
+        log("Found __errno_location fs offset: 0x%llx\n", errno_loc);
+        int64_t offset;
+        fseeko64(ram, errno_loc, SEEK_SET);
+        if (1 != fread(&offset, sizeof(offset), 1, ram))
+        {
+            log("Failed to read __errno_location fs offset from process %d\n", pid);
+            goto fini;
+        }
+
+        log("Found __errno_location fs offset value: 0x%llx\n", offset);
+        if (ERRNO_OFFSET_MIN < offset && offset < ERRNO_OFFSET_MAX)
+        {
+            ret.errno_fs_offset = (int)offset;
+        }
+        else
+        {
+            log("Found __errno_location fs offset value is out of range: 0x%llx\n", offset);
+            goto fini;
         }
     }
 
