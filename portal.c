@@ -121,6 +121,12 @@ int portal_open_native_for(const char* _smth)
     return 0;
 }
 
+struct FilterFuncContext
+{
+    bool completed;
+    char* path;
+};
+
 static DBusHandlerResult filter_func(DBusConnection *conn, DBusMessage *msg, void *user_data)
 {
     if (!dbus_message_is_signal(msg, "org.freedesktop.portal.Request", "Response"))
@@ -132,8 +138,8 @@ static DBusHandlerResult filter_func(DBusConnection *conn, DBusMessage *msg, voi
     if (!dbus_message_iter_init(msg, &args))
         return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 
-    char** result = (char**)user_data;
-    if (*result)
+    struct FilterFuncContext* context = (struct FilterFuncContext*)user_data;
+    if (context->completed)
         return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 
     dbus_message_iter_get_basic(&args, &response_code);
@@ -178,7 +184,8 @@ static DBusHandlerResult filter_func(DBusConnection *conn, DBusMessage *msg, voi
         log("File selection cancelled or failed. Code: %u\n", response_code);
     }
 
-    *result = path;
+    context->path = path;
+    context->completed = true;
     return DBUS_HANDLER_RESULT_HANDLED;
 }
 
@@ -194,7 +201,8 @@ int portal_open_file_dialog(char** selectedPath, void* hwndOwner, bool fileMustE
         "org.freedesktop.portal.FileChooser",
         "OpenFile");
 
-    dbus_connection_add_filter(dbusConnection, filter_func, selectedPath, NULL);
+    struct FilterFuncContext filterContext = {0};
+    dbus_connection_add_filter(dbusConnection, filter_func, &filterContext, NULL);
 
     const char* parent = "";
     const char* openTitle = "Open File";
@@ -304,12 +312,13 @@ cont_free:
     }
 
     log("Waiting for response...\n");
-    while (!*selectedPath && dbus_connection_read_write_dispatch(dbusConnection, -1))
+    while (!filterContext.completed && dbus_connection_read_write_dispatch(dbusConnection, -1))
     {
         // ...
     }
 
-    dbus_connection_remove_filter(dbusConnection, filter_func, selectedPath);
+    dbus_connection_remove_filter(dbusConnection, filter_func, &filterContext);
+    *selectedPath = filterContext.path;
     log("File selection completed\n");
 
     return 0;
@@ -327,7 +336,8 @@ int portal_save_file_dialog(char** selectedPath, void* hwndOwner, MakePatternPar
         "org.freedesktop.portal.FileChooser",
         "SaveFile");
 
-    dbus_connection_add_filter(dbusConnection, filter_func, selectedPath, NULL);
+    struct FilterFuncContext filterContext = {0};
+    dbus_connection_add_filter(dbusConnection, filter_func, &filterContext, NULL);
 
     const char* parent = "";
     const char* saveTitle = "Save File";
@@ -437,12 +447,13 @@ cont_free:
     }
 
     log("Waiting for response...\n");
-    while (!*selectedPath && dbus_connection_read_write_dispatch(dbusConnection, -1))
+    while (!filterContext.completed && dbus_connection_read_write_dispatch(dbusConnection, -1))
     {
         // ...
     }
 
-    dbus_connection_remove_filter(dbusConnection, filter_func, selectedPath);
+    dbus_connection_remove_filter(dbusConnection, filter_func, &filterContext);
+    *selectedPath = filterContext.path;
     log("File selection completed\n");
 
     return 0;
@@ -460,7 +471,8 @@ int portal_choose_directory(char** selectedPath, void* hwndOwner, const char* ti
         "org.freedesktop.portal.FileChooser",
         "OpenFile");
 
-    dbus_connection_add_filter(dbusConnection, filter_func, selectedPath, NULL);
+    struct FilterFuncContext filterContext = {0};
+    dbus_connection_add_filter(dbusConnection, filter_func, &filterContext, NULL);
 
     const char* parent = "";
 
@@ -536,16 +548,23 @@ int portal_choose_directory(char** selectedPath, void* hwndOwner, const char* ti
     dbus_message_unref(msg);
 
     log("Waiting for response...\n");
-    while (!*selectedPath && dbus_connection_read_write_dispatch(dbusConnection, -1))
+    while (!filterContext.completed && dbus_connection_read_write_dispatch(dbusConnection, -1))
     {
         // ...
     }
 
-    dbus_connection_remove_filter(dbusConnection, filter_func, selectedPath);
+    dbus_connection_remove_filter(dbusConnection, filter_func, &filterContext);
+    *selectedPath = filterContext.path;
     log("File selection completed\n");
 
     return 0;
 }
+
+struct FilterFuncContextMulti
+{
+    bool completed;
+    struct PortalFiles outFiles;
+};
 
 static DBusHandlerResult filter_func_multi(DBusConnection *conn, DBusMessage *msg, void *user_data)
 {
@@ -558,14 +577,15 @@ static DBusHandlerResult filter_func_multi(DBusConnection *conn, DBusMessage *ms
     if (!dbus_message_iter_init(msg, &args))
         return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 
-    struct PortalFiles* outFiles = (struct PortalFiles*)user_data;
-    if (outFiles->paths)
+    struct FilterFuncContextMulti* context = (struct FilterFuncContextMulti*)user_data;
+    if (context->completed)
         return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 
     dbus_message_iter_get_basic(&args, &response_code);
     dbus_message_iter_next(&args);
 
     size_t path_capacity = 8;
+    size_t path_count = 0;
     char** paths = malloc(sizeof(char*) * path_capacity);
 
     if (response_code == 0)
@@ -592,12 +612,12 @@ static DBusHandlerResult filter_func_multi(DBusConnection *conn, DBusMessage *ms
                         char* path = str_URI_to_Unix(uri);
                         if (path)
                         {
-                            if (outFiles->count >= path_capacity)
+                            if (path_count >= path_capacity)
                             {
                                 path_capacity *= 2;
                                 paths = realloc(paths, sizeof(char*) * path_capacity);
                             }
-                            paths[outFiles->count++] = path;
+                            paths[path_count++] = path;
                         }
                     }
 
@@ -612,7 +632,15 @@ static DBusHandlerResult filter_func_multi(DBusConnection *conn, DBusMessage *ms
         log("File selection cancelled or failed. Code: %u\n", response_code);
     }
 
-    outFiles->paths = paths;
+    if (0 == path_count)
+    {
+        free(paths);
+        paths = NULL;
+    }
+
+    context->completed = true;
+    context->outFiles.count = path_count;
+    context->outFiles.paths = paths;
     return DBUS_HANDLER_RESULT_HANDLED;
 }
 
@@ -628,7 +656,9 @@ int portal_open_files_dialog(struct PortalFiles* outFiles, void* hwndOwner, Make
         "org.freedesktop.portal.FileChooser",
         "OpenFile");
 
-    dbus_connection_add_filter(dbusConnection, filter_func_multi, outFiles, NULL);
+    struct FilterFuncContextMulti filterContext = {0};
+
+    dbus_connection_add_filter(dbusConnection, filter_func_multi, &filterContext, NULL);
 
     const char* parent = "";
     const char* openTitle = "Open File";
@@ -739,12 +769,13 @@ cont_free:
     }
 
     log("Waiting for response...\n");
-    while (!outFiles->paths && dbus_connection_read_write_dispatch(dbusConnection, -1))
+    while (!filterContext.completed && dbus_connection_read_write_dispatch(dbusConnection, -1))
     {
         // ...
     }
 
-    dbus_connection_remove_filter(dbusConnection, filter_func_multi, outFiles);
+    dbus_connection_remove_filter(dbusConnection, filter_func_multi, &filterContext);
+    *outFiles = filterContext.outFiles;
     log("File selection completed\n");
 
     return 0;
