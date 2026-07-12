@@ -475,6 +475,7 @@ int portal_choose_directory(char** selectedPath, void* hwndOwner, const char* ti
     dbus_connection_add_filter(dbusConnection, filter_func, &filterContext, NULL);
 
     const char* parent = "";
+    title = title ? title : "Select Directory";
 
     DBusMessageIter iter, dict;
 
