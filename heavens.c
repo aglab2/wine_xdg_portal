@@ -258,10 +258,11 @@ int hg_setup(struct LibcFunctions libc)
     }
 
     struct thunk_32to64* winsys = *(void**)((BYTE*)teb + 0xC0); // TEB->WOW32Reserved
-
-    // TODO: make sure that winsys matches the expected layout
-
-    log("WOW32Reserved: %p\n", winsys);
+    if (!winsys)
+    {
+        log("Failed to get WOW32Reserved\n");
+        return -1;
+    }
 
     log("winsys: %p\n", winsys);
     log("winsys.op: %x\n", winsys->op);
