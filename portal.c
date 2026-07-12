@@ -56,7 +56,7 @@ int portal_open_native_for(const char* _smth)
     }
     else
     {
-        path_to_free = str_WinA_to_Unix(_smth);
+        path_to_free = path_WinA_to_Unix(_smth);
         if (!path_to_free)
         {
             log("Failed to convert path to unix\n");
@@ -168,7 +168,7 @@ static DBusHandlerResult filter_func(DBusConnection *conn, DBusMessage *msg, voi
                     dbus_message_iter_get_basic(&array_iter, &uri);
                     if (uri)
                     {
-                        path = str_URI_to_Unix(uri);
+                        path = path_URI_to_Unix(uri);
                         if (path)
                             break;
                     }
@@ -609,7 +609,7 @@ static DBusHandlerResult filter_func_multi(DBusConnection *conn, DBusMessage *ms
                     dbus_message_iter_get_basic(&array_iter, &uri);
                     if (uri)
                     {
-                        char* path = str_URI_to_Unix(uri);
+                        char* path = path_URI_to_Unix(uri);
                         if (path)
                         {
                             if (path_count >= path_capacity)

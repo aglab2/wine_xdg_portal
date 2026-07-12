@@ -18,7 +18,7 @@ int str_conv_init()
     return 0;
 }
 
-char* str_WinA_to_Unix(const char* path)
+char* path_WinA_to_Unix(const char* path)
 {
     if (!path)
     {
@@ -44,7 +44,7 @@ char* str_WinA_to_Unix(const char* path)
     return result;
 }
 
-char* str_WinW_to_Unix(const wchar_t* path)
+char* path_WinW_to_Unix(const wchar_t* path)
 {
     if (!path)
     {
@@ -54,7 +54,7 @@ char* str_WinW_to_Unix(const wchar_t* path)
     return wine_get_unix_file_name_ptr(path);
 }
 
-wchar_t* str_Unix_to_WinW(const char* path)
+wchar_t* path_Unix_to_WinW(const char* path)
 {
     if (!path)
     {
@@ -64,7 +64,7 @@ wchar_t* str_Unix_to_WinW(const char* path)
     return wine_get_dos_file_name_ptr(path);
 }
 
-char* str_Unix_to_WinA(const char* path)
+char* path_Unix_to_WinA(const char* path)
 {
     if (!path)
     {
@@ -96,7 +96,7 @@ char* str_Unix_to_WinA(const char* path)
     return result;
 }
 
-char* str_WinW_to_WinA(const wchar_t* path)
+char* path_WinW_to_WinA(const wchar_t* path)
 {
     if (!path)
     {
@@ -119,7 +119,7 @@ char* str_WinW_to_WinA(const wchar_t* path)
     return result;
 }
 
-char* str_URI_to_Unix(const char* uri)
+char* path_URI_to_Unix(const char* uri)
 {
     if (strncmp(uri, "file://", 7) != 0)
     {
@@ -170,4 +170,40 @@ void str_free(void* path)
     }
 
     HeapFree(GetProcessHeap(), 0, (LPVOID)path);
+}
+
+char* rstr_dup(const char* str)
+{
+    if (!str)
+    {
+        return NULL;
+    }
+
+    size_t len = strlen(str) + 1;
+    char* dup = (char*)HeapAlloc(GetProcessHeap(), 0, len * sizeof(char));
+    memcpy(dup, str, len);
+    return dup;
+}
+
+char* rstr_W2A(const wchar_t* str)
+{
+    if (!str)
+    {
+        return NULL;
+    }
+
+    int len = WideCharToMultiByte(CP_UTF8, 0, str, -1, NULL, 0, NULL, NULL);
+    if (len == 0)
+    {
+        return NULL;
+    }
+
+    char* result = (char*)HeapAlloc(GetProcessHeap(), 0, len * sizeof(char));
+    if (!result)
+    {
+        return NULL;
+    }
+
+    WideCharToMultiByte(CP_UTF8, 0, str, -1, result, len, NULL, NULL);
+    return result;
 }

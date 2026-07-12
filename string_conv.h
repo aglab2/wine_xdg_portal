@@ -6,6 +6,8 @@
 
 int str_conv_init();
 
-char* str_WinW_to_Unix(const wchar_t*);
-char* str_WinW_to_WinA(const wchar_t*);
-wchar_t* str_Unix_to_WinW(const char*);
+char* path_WinW_to_Unix(const wchar_t*);
+char* path_WinW_to_WinA(const wchar_t*);
+wchar_t* path_Unix_to_WinW(const char*);
+
+char* rstr_W2A(const wchar_t*);

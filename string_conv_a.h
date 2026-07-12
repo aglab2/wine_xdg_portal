@@ -1,7 +1,9 @@
 #pragma once
 
-char* str_WinA_to_Unix(const char*);
-char* str_Unix_to_WinA(const char*);
-char* str_URI_to_Unix(const char* uri);
+char* path_WinA_to_Unix(const char*);
+char* path_Unix_to_WinA(const char*);
+char* path_URI_to_Unix(const char* uri);
+
+char* rstr_dup(const char* str);
 
 void str_free(void* path);
